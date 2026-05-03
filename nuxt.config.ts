@@ -34,6 +34,10 @@ export default defineNuxtConfig({
     disableBotAccessLog: false,
     disableAutoBackup: false,
     notFoundRedirect: '',
+    /** Base URL for Shlink-compatible short redirects when Sink KV misses (empty = disabled). */
+    shlinkFallbackUrl: '',
+    /** Seconds to keep KV entries synced from Shlink fallback (relative TTL from now when cached). */
+    shlinkFallbackCacheTtlSeconds: 30 * 24 * 60 * 60,
     safeBrowsingDoh: '', // Set to DoH URL to enable auto-detection, e.g. https://family.cloudflare-dns.com/dns-query
     public: {
       previewMode: '',

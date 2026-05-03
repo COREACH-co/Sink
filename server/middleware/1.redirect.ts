@@ -1,4 +1,5 @@
 import type { Link } from '@/types'
+import { LinkSchema } from '#shared/schemas/link'
 import { parsePath, withQuery } from 'ufo'
 
 const SOCIAL_BOTS = [
@@ -50,13 +51,21 @@ function hasOgConfig(link: Link): boolean {
 export default eventHandler(async (event) => {
   const { pathname: slug } = parsePath(event.path.replace(/^\/|\/$/g, ''))
   const { slugRegex, reserveSlug } = useAppConfig()
-  const { homeURL, linkCacheTtl, caseSensitive, redirectWithQuery, redirectStatusCode } = useRuntimeConfig(event)
+  const {
+    homeURL,
+    linkCacheTtl,
+    caseSensitive,
+    redirectWithQuery,
+    redirectStatusCode,
+    shlinkFallbackUrl,
+    shlinkFallbackCacheTtlSeconds,
+    notFoundRedirect,
+  } = useRuntimeConfig(event)
   const { cloudflare } = event.context
 
   if (event.path === '/' && homeURL)
     return sendRedirect(event, homeURL)
 
-  const { notFoundRedirect } = useRuntimeConfig(event)
   // Bypass redirect check for notFoundRedirect path to prevent infinite loop
   if (notFoundRedirect && event.path === notFoundRedirect) {
     return
@@ -165,6 +174,54 @@ export default eventHandler(async (event) => {
       return sendRedirect(event, buildTarget(link.url), +redirectStatusCode)
     }
     else {
+      if (
+        (event.method === 'GET' || event.method === 'HEAD')
+        && typeof shlinkFallbackUrl === 'string'
+        && shlinkFallbackUrl.trim()
+      ) {
+        const longUrl = await fetchShlinkLongUrl(shlinkFallbackUrl, slug, {
+          headers: {
+            'user-agent': getHeader(event, 'user-agent') || 'Sink-Bot',
+            'x-forwarded-for': getHeader(event, 'cf-connecting-ip') || getHeader(event, 'x-forwarded-for') || '',
+          },
+        })
+
+        if (longUrl) {
+          const storageSlug = normalizeSlug(event, slug)
+          const ttl = Number(shlinkFallbackCacheTtlSeconds)
+          const nowSec = Math.floor(Date.now() / 1000)
+          const expiresAt = Number.isFinite(ttl) && ttl > 0 ? nowSec + ttl : undefined
+
+          const fallbackLink = LinkSchema.parse({
+            slug: storageSlug,
+            url: longUrl,
+            comment: 'shlink-fallback',
+            ...(expiresAt !== undefined ? { expiration: expiresAt } : {}),
+          })
+
+          try {
+            await putLink(event, fallbackLink)
+          }
+          catch (error) {
+            console.error('Failed to cache Shlink fallback link:', error)
+          }
+
+          event.context.link = fallbackLink
+          try {
+            await useAccessLog(event)
+          }
+          catch (error) {
+            console.error('Failed write access log:', error)
+          }
+
+          const query = getQuery(event)
+          const shouldRedirectWithQuery = fallbackLink.redirectWithQuery ?? redirectWithQuery
+          const buildTarget = (url: string) => shouldRedirectWithQuery ? withQuery(url, query) : url
+
+          return sendRedirect(event, buildTarget(fallbackLink.url), +redirectStatusCode)
+        }
+      }
+
       if (notFoundRedirect) {
         return sendRedirect(event, notFoundRedirect, 302)
       }
